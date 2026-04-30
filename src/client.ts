@@ -1,8 +1,8 @@
 import WebSocket, { MessageEvent, CloseEvent, ErrorEvent } from "isomorphic-ws";
 import { SubscriptionMessage, Message, ConnectionStatus } from "./model";
 
-const DEFAULT_HOST = "wss://ws-live-data.polymarket.com";
-const DEFAULT_PING_INTERVAL = 5000;
+const DEFAULT_HOST = "wss://ws-subscriptions-clob.polymarket.com/ws/user";
+const DEFAULT_PING_INTERVAL = 10;
 
 /**
  * Interface representing the arguments for initializing a RealTimeDataClient.
@@ -76,7 +76,7 @@ export class RealTimeDataClient {
     constructor(args?: RealTimeDataClientArgs) {
         this.host = args!.host || DEFAULT_HOST;
         this.pingInterval = args!.pingInterval || DEFAULT_PING_INTERVAL;
-        this.autoReconnect = args!.autoReconnect || true;
+        this.autoReconnect = args?.autoReconnect ?? true;
         this.onCustomMessage = args!.onMessage;
         this.onConnect = args!.onConnect;
         this.onStatusChange = args!.onStatusChange;
@@ -93,7 +93,6 @@ export class RealTimeDataClient {
             this.ws.onmessage = this.onMessage;
             this.ws.onclose = this.onClose;
             this.ws.onerror = this.onError;
-            this.ws.pong = this.onPong;
         }
         return this;
     }
@@ -112,9 +111,7 @@ export class RealTimeDataClient {
     /**
      * Handles WebSocket 'pong' event. Continues the ping cycle.
      */
-    private onPong = async () => {
-        delay(this.pingInterval).then(() => this.ping());
-    };
+ 
 
     /**
      * Handles WebSocket errors. Logs the error and attempts reconnection if `autoReconnect` is enabled.
@@ -148,11 +145,8 @@ export class RealTimeDataClient {
             return console.warn("Socket not open. Ready state is:", this.ws.readyState);
         }
 
-        this.ws.send("ping", (err: Error | undefined) => {
-            if (err) {
-                console.error("ping error", err);
-            }
-        });
+        this.ws.ping();
+        await delay(this.pingInterval);
     };
 
     /**
@@ -161,11 +155,19 @@ export class RealTimeDataClient {
      */
     private onMessage = (event: MessageEvent): void => {
         if (typeof event.data === "string" && event.data.length > 0) {
-            if (this.onCustomMessage && event.data.includes("payload")) {
+            try {
                 const message = JSON.parse(event.data);
-                this.onCustomMessage(this, message as Message);
-            } else {
-                console.log("onMessage error", { event });
+
+                if (this.onCustomMessage) {
+                    this.onCustomMessage(this, message as Message);
+                } else {
+                    console.log("onMessage error: no handler", { event });
+                }
+            } catch (error) {
+                console.error("Failed to parse WebSocket message", {
+                    rawData: event.data,
+                    error,
+                });
             }
         }
     };
@@ -182,14 +184,14 @@ export class RealTimeDataClient {
      * Subscribes to a data stream by sending a subscription message.
      * @param msg Subscription request message.
      */
-    public subscribe(msg: SubscriptionMessage) {
+    public subscribe(msg: object) {
         if (this.ws.readyState !== WebSocket.OPEN) {
             return console.warn("Socket not open. Ready state is:", this.ws.readyState);
         }
-        this.ws.send(JSON.stringify({ action: "subscribe", ...msg }), (err?: Error) => {
+        this.ws.send(JSON.stringify({ ...msg }), (err?: Error) => {
             if (err) {
                 console.error("subscribe error", err);
-                this.ws.close();
+                //this.ws.close();
             }
         });
     }
