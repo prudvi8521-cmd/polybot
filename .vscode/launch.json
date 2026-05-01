@@ -15,6 +15,18 @@
       "cwd": "${workspaceFolder}",
       "skipFiles": ["<node_internals>/**"],
       "envFile": "${workspaceFolder}/.env"
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Run Trading Bot (tsc build)",
+      "runtimeExecutable": "/opt/homebrew/bin/node",
+      "program": "${workspaceFolder}/dist/index.js",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "tsc: build - tsconfig.json",
+      "outFiles": ["${workspaceFolder}/dist/**/*.js"],
+      "skipFiles": ["<node_internals>/**"],
+      "envFile": "${workspaceFolder}/.env"
     }
   ]
 }

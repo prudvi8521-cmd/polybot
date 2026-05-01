@@ -158,6 +158,11 @@ export class RealTimeDataClient {
             try {
                 const message = JSON.parse(event.data);
 
+                if(message == "ping"){
+                    this.ws.send("pong");
+                    return;
+                }
+
                 if (this.onCustomMessage) {
                     this.onCustomMessage(this, message as Message);
                 } else {
@@ -171,6 +176,7 @@ export class RealTimeDataClient {
             }
         }
     };
+
 
     /**
      * Closes the WebSocket connection.
