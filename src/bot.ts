@@ -15,12 +15,17 @@ export class TradingBot {
     private activeSellOrders: Set<string> = new Set();
     private activeBuyOrders: Set<string> = new Set();
     private buyOrderCountPerToken: Map<string, number> = new Map();  // Track buy count per
+    private sellOrderCountPerToken: Map<string, number> = new Map();  // Track sell count per token
     private MAX_BUYS_PER_TOKEN: number;
     private BUY_SIZE: number;
-    private sellOrderCountPerToken: Map<string, number> = new Map();  // Track sell count per token
     private MAX_SELLS_PER_TOKEN: number;
-    private lastBuyTimestamp: Map<string, number> = new Map();
     private BUY_COOLDOWN_MS :number;
+    private lastBuyTimestamp: Map<string, number> = new Map();
+    private intervalRealizedPnL: number = 0;
+    private totalRealizedPnL: number = 0;
+    private totalBuys: number = 0;
+    private totalSells: number = 0;
+    private isfirstConnect: boolean = true;
 
     constructor(clobClient: ClobClient, clobApiCreds: ClobApiKeyCreds, userClientArgs?: any, marketClientArgs?: any) {
         this.clobClient = clobClient;
@@ -29,7 +34,7 @@ export class TradingBot {
         this.MAX_BUYS_PER_TOKEN = parseInt(process.env.MAX_BUYS_PER_TOKEN || "1", 10);
         this.MAX_SELLS_PER_TOKEN = parseInt(process.env.MAX_SELLS_PER_TOKEN || "1", 10);
         this.BUY_SIZE = parseFloat(process.env.BUY_SIZE || "1");
-        this.BUY_COOLDOWN_MS = parseInt(process.env.BUY_COOLDOWN_MS || "40000", 10); 
+        this.BUY_COOLDOWN_MS = parseInt(process.env.BUY_COOLDOWN_MS || "30000", 10); 
 
         // Client for user orders
         this.userClient = new RealTimeDataClient({
@@ -100,7 +105,10 @@ export class TradingBot {
      */
     private onMarketConnect = (_client: RealTimeDataClient) => {
         console.log("Market client connected to Polymarket");
-        this.startPeriodicMarketRefresh();
+        if (this.isfirstConnect) {
+            this.startPeriodicMarketRefresh();
+            this.isfirstConnect = false;
+        }
     };
 
 
@@ -108,14 +116,20 @@ export class TradingBot {
      * Handle user client messages
      */
     private onUserMessage = (_client: RealTimeDataClient, message: UserMessage) => {
-        if ( message.side === "BUY" && message.status === "CONFIRMED") {
-            try {
-                    const data = message;
-                    this.handleNewOrderOrMarketUpdate(data);
-            } catch (error) {
-                console.error("Error parsing user message payload:", error);
-            }
+        if (message.status === "CONFIRMED" || message.status === "FAILED") {   
+            console.log(message.status);
         }
+
+        if (message.side === "BUY" && message.status === "CONFIRMED") {
+            const data = message;
+            this.handleNewOrderOrMarketUpdate(data);
+        }
+        else if (message.side === "SELL" && message.status === "FAILED") {
+            this.addPosition(message.asset_id, parseFloat(message.price), parseFloat(message.size));
+            this.totalSells -= 1;
+            this.sellOrderCountPerToken.set(message.asset_id, this.sellOrderCountPerToken.get(message.asset_id)! - 1);
+        }
+
     };
 
     /**
@@ -124,14 +138,10 @@ export class TradingBot {
     private onMarketMessage = (_client: RealTimeDataClient, message: MarketMessage) => {
         
         if (message.event_type === "price_change" ) {
-            try {
-                    const data = message;
-                // Handle price updates
-                    this.updateMarkPrice(data);
-                    this.evaluatePositions();
-            }catch (error) {
-                console.error("Error parsing market message payload:", error);
-            }
+            const data = message;
+            // Handle price updates
+            this.updateMarkPrice(data);
+            this.evaluatePositions();
         }
     };
 
@@ -143,18 +153,18 @@ export class TradingBot {
     private startPeriodicMarketRefresh() {
         const scheduleNextRefresh = () => {
             const now = new Date();
-            const currentMinutes = now.getMinutes()+1; // Add 1 minute to ensure we schedule for the next interval, not the current one at edges
+            const currentMinutes = now.getMinutes(); // Add 1 minute to ensure we schedule for the next interval, not the current one at edges
             const currentSeconds = now.getSeconds();
             const currentMillis = now.getMilliseconds();
             
             // Calculate next 5-minute boundary
             const nextIntervalMinutes = Math.ceil(currentMinutes / 5) * 5;
-            const minutesToAdd = nextIntervalMinutes === currentMinutes ? 5 : nextIntervalMinutes - currentMinutes;
+            const minutesToAdd = nextIntervalMinutes == currentMinutes ? 5 : nextIntervalMinutes - currentMinutes;
             
             // Calculate milliseconds until next interval
             const millisecondsUntilNext = (minutesToAdd * 60 - currentSeconds) * 1000 - currentMillis;
             
-            console.log(`Market refresh scheduled in ${(millisecondsUntilNext / 1000).toFixed(2)} seconds (next interval at ${String(nextIntervalMinutes % 60).padStart(2, '0')}:00)`);
+            console.log(`Market refresh scheduled in ${(millisecondsUntilNext / 1000).toFixed(2)} seconds (next interval at ${String((currentMinutes+minutesToAdd) % 60).padStart(2, '0')}:00)`);
             
             setTimeout(() => {
                 this.refreshMarketSubscriptions();
@@ -171,17 +181,39 @@ export class TradingBot {
      */
     private async refreshMarketSubscriptions() {
         try {
-            console.log(`[${new Date().toISOString()}] Refreshing market subscriptions at exact 5-minute interval...`);
-            
-            // Clear existing subscriptions and tokens
+
+            console.log(`=== 5-MIN INTERVAL SUMMARY ===`);
+            for (const [token, positionsArray] of this.positions) {
+                const remaining = positionsArray.filter(p => p.size !== -1).length;
+
+                if (remaining > 0) {
+                    console.log(`[FAILED TO CLOSE] ${token}: ${remaining}`);   
+                }
+
+                for (const pos of positionsArray) {
+                    if(pos.size === -1){
+                        continue; // Skip positions that were never bought
+                    }
+                    const pnl = (0 - pos.entryPrice) * pos.size;
+                    this.intervalRealizedPnL += pnl;
+                }
+            }
+
+            this.totalRealizedPnL += this.intervalRealizedPnL;
+
+            console.log(`Total Interval PnL: ${(this.intervalRealizedPnL.toFixed(2))}`);
+            console.log(`Total Realized PnL: ${this.totalRealizedPnL.toFixed(2)}`);
+            console.log(`Total Buys: ${this.totalBuys}`);
+            console.log(`Total Sells: ${this.totalSells}`);
+            console.log(`=== [${new Date().toISOString()}] ===`)
+
+
             console.log("Clearing previous subscriptions...");
             
             // Unsubscribe from all current tokens
-            
             for (const token of this.subscribedTokens) {
                 this.unsubscribeFromMarkets(token);
             }
-            
             
             // Clear all tracking data
             this.subscribedTokens.clear();
@@ -191,6 +223,8 @@ export class TradingBot {
             this.activeBuyOrders.clear();
             this.buyOrderCountPerToken.clear(); 
             this.sellOrderCountPerToken.clear();
+            this.intervalRealizedPnL = 0;
+            this.lastBuyTimestamp.clear();
             
             console.log("All subscriptions cleared");
 
@@ -241,7 +275,6 @@ export class TradingBot {
                 data.markets.forEach((market: any) => {tokenIds.push(...JSON.parse(market.clobTokenIds));});
             };
             
-            console.log(`Fetched ${tokenIds.length} token IDs from API`);
             return tokenIds;
             
         } catch (error) {
@@ -286,7 +319,6 @@ export class TradingBot {
      */
     private subscribeToUserData() {
         this.userClient.subscribe(
-            // subscribe to user orders
             {
                 "auth": {
                     "apiKey": this.clobApiCreds.key,
@@ -300,26 +332,22 @@ export class TradingBot {
     
     private subscribeToMarkets(asset_id: string) {
 
-        console.log(`Subscribing to clob_market with token: ${asset_id}`);
-
         this.marketClient.subscribe(
-                {
-                    "type": "market",
-                    "assets_ids": [asset_id],
-                },
+            {
+                "type": "market",
+                "assets_ids": [asset_id],
+            },
         );
         this.marketSubscriptionActive = true;
     }
 
     private addsubscriptionToMarkets(asset_id: string) {
-        
-        console.log(`Subscribing to clob_market with token: ${asset_id}`);
-        
+                
         this.marketClient.subscribe(
-                {
-                    "operation": "subscribe",
-                    "assets_ids": [asset_id],
-                },
+            {
+                "operation": "subscribe",
+                "assets_ids": [asset_id],
+            },
         );
     }
 
@@ -327,7 +355,6 @@ export class TradingBot {
         
         console.log(`Unsubscribing from clob_market with token: ${asset_id}`);
         
-        // Subscribe with updated token filters
         this.marketClient.subscribe(
                 {
                     "assets_ids": [asset_id],
@@ -388,25 +415,18 @@ export class TradingBot {
     private shouldBuy(markPrice: number): boolean {
         // Calculate time remaining until next 5-minute mark
 
-        const now = new Date();
-        const currentMinutes = now.getMinutes();
-        const currentSeconds = now.getSeconds();
+        // const now = new Date();
+        // const currentMinutes = now.getMinutes();
+        // const currentSeconds = now.getSeconds();
         
-        const nextIntervalMinutes = Math.ceil(currentMinutes / 5) * 5;
-        const minutesToNext = nextIntervalMinutes === currentMinutes ? 5 : nextIntervalMinutes - currentMinutes;
-        const secondsToNext = minutesToNext * 60 - currentSeconds;
+        // const nextIntervalMinutes = Math.ceil(currentMinutes / 5) * 5;
+        // const minutesToNext = nextIntervalMinutes === currentMinutes ? 5 : nextIntervalMinutes - currentMinutes;
+        // const secondsToNext = minutesToNext * 60 - currentSeconds;
         
        // console.log(`Time left: ${secondsToNext}s (${(secondsToNext / 60).toFixed(2)}min), Price: ${markPrice}`);
 
-       if(markPrice < 0.15&& secondsToNext > 250){
-            this.refreshMarketSubscriptions();
-            return false; // Skip buy if price is very low and we are far from next interval (to avoid buying liquidation traps right after refresh)
-        }
-        
         if (
-            (markPrice < 0.35 && secondsToNext > 200) ||
-            (markPrice < 0.25 && secondsToNext > 150 && secondsToNext <= 250) ||
-            (markPrice < 0.15 && secondsToNext > 100 && secondsToNext <= 150) 
+            (markPrice > 0.54)
         ) {
             //console.log(`Buy condition met: price ${markPrice}, time ${(secondsToNext / 60).toFixed(2)}min`);
             return true;
@@ -454,32 +474,40 @@ export class TradingBot {
             return;
         }
 
+        if(this.lastBuyTimestamp.size > 0){// temp check to limit buy to 1
+            return;
+        }
+
         this.activeBuyOrders.add(asset_id);
-        this.buyOrderCountPerToken.set(asset_id, currentBuyCount + 1);  // Increment buy count for this token
+        this.buyOrderCountPerToken.set(asset_id, currentBuyCount + 1);
+        this.totalBuys += 1;
         this.lastBuyTimestamp.set(asset_id, now);
-        console.log(`Buy order initiated for ${asset_id}. Buy count: ${this.buyOrderCountPerToken.get(asset_id)}/${this.MAX_BUYS_PER_TOKEN}`);
 
         try {
-            console.log(`Executing BUY trade for ${asset_id} at price ${markPrice} and size ${size}`);
+            console.log(`Executing BUY trade for ${asset_id} at price ${markPrice} and size ${size}. Buy count: ${this.buyOrderCountPerToken.get(asset_id)}/${this.MAX_BUYS_PER_TOKEN}`);
 
             const response = await this.clobClient.createAndPostMarketOrder(
                 {
                     tokenID: asset_id,
                     side: Side.BUY,
                     amount: size,
-                    price: 0.50, // worst-price limit (slippage protection)
+                    price: 0.80, // worst-price limit (slippage protection)
                 },
                 { tickSize: "0.01", negRisk: false },
-                OrderType.FOK,	//Fill-Or-Kill — must fill immediately and entirely, or cancel
+                OrderType.FAK,	//Fill-Or-Kill — must fill immediately and entirely, or cancel
             );
 
             console.log("Buy Order ID:", response.orderID);
-            console.log("Status:", response.status);
+
+            if (response.status == 400){
+                throw new Error("Buy trade failed with status 400");
+            }
 
         } catch (err) {
             console.error("Buy trade failed:", err);
             // Retry logic if failed
-            this.buyOrderCountPerToken.set(asset_id, currentBuyCount - 1);  // Increment buy count for this token
+            this.buyOrderCountPerToken.set(asset_id, this.buyOrderCountPerToken.get(asset_id)! - 1);
+            this.totalBuys -= 1;    
             this.lastBuyTimestamp.set(asset_id, lastBuy);
         }
         this.activeBuyOrders.delete(asset_id);
@@ -488,26 +516,29 @@ export class TradingBot {
     private async executeSellTrade(asset_id: string, markPrice: number, size: number, entryPrice: number) {
         //  protection
         if (this.activeSellOrders.has(asset_id)) {
-            console.log(`Sell already in progress or completed for ${asset_id}, skipping`);
+            //console.log(`Sell already in progress or completed for ${asset_id}, skipping`);
             return;
         }
 
         // Check if we've exceeded max sells for this token
         const currentSellCount = this.sellOrderCountPerToken.get(asset_id) || 0;
         if (currentSellCount >= this.MAX_SELLS_PER_TOKEN) {
-            console.log(`Max sell orders (${this.MAX_SELLS_PER_TOKEN}) reached for token ${asset_id}, skipping sell`);
+            //console.log(`Max sell orders (${this.MAX_SELLS_PER_TOKEN}) reached for token ${asset_id}, skipping sell`);
             return;
         }
 
         this.activeSellOrders.add(asset_id);
-        this.sellOrderCountPerToken.set(asset_id, currentSellCount + 1);  // Increment sell count for this token
-        console.log(`Sell order initiated for ${asset_id}. Sell count: ${this.sellOrderCountPerToken.get(asset_id)}/${this.MAX_SELLS_PER_TOKEN}`);
+        this.sellOrderCountPerToken.set(asset_id, currentSellCount + 1);  
+        this.totalSells += 1;
         this.removePosition(asset_id, size, entryPrice);
+       
+        var pnl = (markPrice - entryPrice) * size;
+        this.intervalRealizedPnL += pnl;
 
         try {
             const truncated_size = Math.floor(size * 100) / 100;
 
-            console.log(`Executing trade for ${asset_id} at price ${markPrice} and size ${truncated_size}`);
+            console.log(`Executing trade for ${asset_id} at price ${markPrice} and size ${truncated_size}. Sell count: ${this.sellOrderCountPerToken.get(asset_id)}/${this.MAX_SELLS_PER_TOKEN}`);
 
             const response = await this.clobClient.createAndPostMarketOrder(
                 {
@@ -522,16 +553,22 @@ export class TradingBot {
             );
 
             console.log("Order ID:", response.orderID);
-            console.log("Status:", response.status);
+
+            if (response.status == 400){
+                throw new Error("Sell trade failed with status 400.");
+            }
             
 
         } catch (err) {
             console.error("Trade failed:", err);
-            this.addPosition(asset_id, markPrice, size);
-            this.sellOrderCountPerToken.set(asset_id, currentSellCount - 1);  // Decrement sell count for this token
-
+            this.addPosition(asset_id, entryPrice, size);
+            this.sellOrderCountPerToken.set(asset_id, this.sellOrderCountPerToken.get(asset_id)! - 1);
+            this.totalSells -= 1;
+            this.intervalRealizedPnL -= pnl;
         }
         this.activeSellOrders.delete(asset_id);
+        console.log(`[REALIZED] PnL: ${pnl.toFixed(2)}`);
+
 }
 
     /**
@@ -541,22 +578,24 @@ export class TradingBot {
         const positionsPerTokenArray = this.positions.get(token_id) || [];
         positionsPerTokenArray.push({ entryPrice, size });
         this.positions.set(token_id, positionsPerTokenArray);
-        console.log(`Added position: ${token_id} @ ${entryPrice}, size: ${size}. Total positions: ${positionsPerTokenArray.length}`);
+        if(size !== -1){
+            console.log(`Added position: ${token_id} @ ${entryPrice}, size: ${size}. Positions for token: ${positionsPerTokenArray.filter(p => p.size !== -1).length}. Total positions: ${Array.from(this.positions.values()).reduce((sum, arr) => sum + arr.filter(p => p.size !== -1).length, 0)}`);
+        }
     }
 
     /**
      * Remove a specific position for a token by size and entry price
      */
     private removePosition(asset_id: string, size: number, entryPrice: number) {
-        const positionsArray = this.positions.get(asset_id);
-        if (positionsArray) {
-            const index = positionsArray.findIndex(p => p.size === size && p.entryPrice === entryPrice);
+        const positionsPerTokenArray = this.positions.get(asset_id);
+        if (positionsPerTokenArray) {
+            const index = positionsPerTokenArray.findIndex(p => p.size === size && p.entryPrice === entryPrice);
             if (index !== -1) {
-                positionsArray.splice(index, 1);
-                console.log(`Removed position for ${asset_id} (size: ${size}, entryPrice: ${entryPrice}). Remaining positions: ${positionsArray.length}`);
+                positionsPerTokenArray.splice(index, 1);
+                console.log(`Removed position for ${asset_id} (size: ${size}, entryPrice: ${entryPrice}). Remaining positions for token: ${positionsPerTokenArray.filter(p => p.size !== -1).length}. Total remaining positions: ${Array.from(this.positions.values()).reduce((sum, arr) => sum + arr.filter(p => p.size !== -1).length, 0)}`);
             }
             // Delete token from map if no positions left
-            if (positionsArray.length === 0) {
+            if (positionsPerTokenArray.length === 0) {
                 this.positions.delete(asset_id);
             }
         }

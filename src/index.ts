@@ -29,11 +29,9 @@ async function main() {
         // 1. Connect to Polymarket WebSocket
         // 2. Subscribe to clob_user to receive order updates
         // 3. Extract tokens from orders and subscribe to clob_market for each token
-        // 4. Listen for book_update messages and evaluate positions
+        // 4. Listen for price_update messages and evaluate positions
         // 5. Execute trades based on shouldExecuteTrade logic
 
-        // You can also manually add positions if needed
-        // bot.addPosition("market-id", 0.50);
 
         // Keep the process running
         process.on("SIGINT", () => {
