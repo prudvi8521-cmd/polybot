@@ -415,18 +415,18 @@ export class TradingBot {
     private shouldBuy(markPrice: number): boolean {
         // Calculate time remaining until next 5-minute mark
 
-        // const now = new Date();
-        // const currentMinutes = now.getMinutes();
-        // const currentSeconds = now.getSeconds();
+        const now = new Date();
+        const currentMinutes = now.getMinutes();
+        const currentSeconds = now.getSeconds();
         
-        // const nextIntervalMinutes = Math.ceil(currentMinutes / 5) * 5;
-        // const minutesToNext = nextIntervalMinutes === currentMinutes ? 5 : nextIntervalMinutes - currentMinutes;
-        // const secondsToNext = minutesToNext * 60 - currentSeconds;
+        const nextIntervalMinutes = Math.ceil(currentMinutes / 5) * 5;
+        const minutesToNext = nextIntervalMinutes === currentMinutes ? 5 : nextIntervalMinutes - currentMinutes;
+        const secondsToNext = minutesToNext * 60 - currentSeconds;
         
        // console.log(`Time left: ${secondsToNext}s (${(secondsToNext / 60).toFixed(2)}min), Price: ${markPrice}`);
 
         if (
-            (markPrice > 0.54)
+            (markPrice > 0.57 && secondsToNext < 295)
         ) {
             //console.log(`Buy condition met: price ${markPrice}, time ${(secondsToNext / 60).toFixed(2)}min`);
             return true;
