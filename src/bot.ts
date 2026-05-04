@@ -426,7 +426,7 @@ export class TradingBot {
        // console.log(`Time left: ${secondsToNext}s (${(secondsToNext / 60).toFixed(2)}min), Price: ${markPrice}`);
 
         if (
-            (markPrice > 0.57 && secondsToNext < 295)
+            (markPrice >= 0.61 && secondsToNext < 295)
         ) {
             //console.log(`Buy condition met: price ${markPrice}, time ${(secondsToNext / 60).toFixed(2)}min`);
             return true;
@@ -438,8 +438,8 @@ export class TradingBot {
     
     private shouldSell(entryPrice: number, markPrice: number): boolean {
         // Example: Execute sell trade if price moves 15% from entry
-        const threshold = 0.15;
-        return (markPrice - entryPrice) / entryPrice > threshold;
+        const threshold = -0.40;
+        return (markPrice - entryPrice) / entryPrice < threshold;
     }
 
    
