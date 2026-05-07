@@ -7,7 +7,7 @@ import { ClobClient, Side, OrderType } from "@polymarket/clob-client-v2";
 const MODES = {
     UNIDIRECTIONAL: "UNIDIRECTIONAL",
     COUNTERDIRECTIONAL: "COUNTERDIRECTIONAL",
-    BIDERECTIONAL: "BIDERECTIONAL",
+    BIDIRECTIONAL: "BIDIRECTIONAL",
 } as const;
 
 type TradingMode = typeof MODES[keyof typeof MODES];
@@ -15,7 +15,7 @@ type TradingMode = typeof MODES[keyof typeof MODES];
 const modeMap: Record<number, TradingMode> = {
     1: MODES.UNIDIRECTIONAL,
     [-1]: MODES.COUNTERDIRECTIONAL,
-    2: MODES.BIDERECTIONAL,
+    2: MODES.BIDIRECTIONAL,
 };
 
 
@@ -447,8 +447,9 @@ export class TradingBot {
        // console.log(`Time left: ${secondsToNext}s (${(secondsToNext / 60).toFixed(2)}min), Price: ${markPrice}`);
         
 
-        if ((this.mode == MODES.UNIDIRECTIONAL && (markPrice>=0.55 && secondsToNext < 295))||
-            ((this.mode == MODES.COUNTERDIRECTIONAL || this.mode == MODES.BIDERECTIONAL) && (markPrice <= 0.41 && markPrice>=0.26 && secondsToNext < 295 )))
+        if ((this.mode == MODES.UNIDIRECTIONAL && (markPrice>=0.60 && secondsToNext < 295))||
+            ((this.mode == MODES.COUNTERDIRECTIONAL && (markPrice <= 0.43 && secondsToNext < 295 ))||
+            ((this.mode == MODES.BIDIRECTIONAL) && (markPrice <= 0.41 && markPrice>=0.26 && secondsToNext < 295 ))))
         {
             //console.log(`Buy condition met: price ${markPrice}, time ${(secondsToNext / 60).toFixed(2)}min`);
             return true;
@@ -463,8 +464,8 @@ export class TradingBot {
         entryPrice = parseFloat(entryPrice.toFixed(2));
 
         if(((this.mode == MODES.UNIDIRECTIONAL) && (markPrice <= 0.45))||
-           ((this.mode == MODES.COUNTERDIRECTIONAL) && (markPrice <= 0.20))||
-           ((this.mode == MODES.BIDERECTIONAL) && (markPrice <= 0.25 || markPrice >= 0.59))){
+           ((this.mode == MODES.COUNTERDIRECTIONAL) && (markPrice <= 0.15))||
+           ((this.mode == MODES.BIDIRECTIONAL) && (markPrice <= 0.15 || markPrice >= 0.59))){
             return true;  
         }
         return false;
@@ -537,8 +538,12 @@ export class TradingBot {
             console.error("Buy trade failed:", err);
             // Retry logic if failed
             this.buyOrderCountPerToken.set(asset_id, this.buyOrderCountPerToken.get(asset_id)! - 1);
-            this.totalBuys -= 1;    
-            this.lastBuyTimestamp.set(asset_id, lastBuy);
+            this.totalBuys -= 1;
+            if (lastBuy == 0) {
+                this.lastBuyTimestamp.delete(asset_id);
+            } else {                                                
+                this.lastBuyTimestamp.set(asset_id, lastBuy);
+            }
         }
         this.activeBuyOrders.delete(asset_id);
     }
