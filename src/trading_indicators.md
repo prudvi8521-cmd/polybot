@@ -232,7 +232,6 @@ Implied Volatility (IV) acts as a "Price Tag" for fear. It tells you if the incr
 High Demand: When investors aggressively buy options (driving the price up), the calculated IV must increase to justify that higher price.Low Demand: When traders sell off options (driving the price down), the calculated IV decreases
 
 IV is calculated separately for every single option contract on the board.
-"Total IV" is a weighted average that usually follows whichever side has the most aggression and volume. But can be violated on Market exceptions
 
 
 | PCR | IV | Likely Action | Market Outlook |
@@ -250,8 +249,7 @@ When you see Falling PCR + Rising IV, you must look at the Price Action to know 
 | Upward Trend | Falling | Rising | Strong Bullish — aggressive call buying (FOMO) |
 | Sharp Sell-off | Falling | Rising | Bearish Trap — short covering/liquidity hunt ("The Tank") |
 
-In the above scenario, Total IV is dominated by puts due to their higher premiums and not calls instead of volume difference.
-Instead of one average IV, professional traders look at the 25-delta Risk Reversal (RR), which compares the IV of out-of-the-money (OTM) puts vs. OTM calls.
+
 
 
 COT Report (Commitment of Traders):

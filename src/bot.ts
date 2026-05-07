@@ -26,6 +26,8 @@ export class TradingBot {
     private totalBuys: number = 0;
     private totalSells: number = 0;
     private isfirstConnect: boolean = true;
+    private mode: number; 
+    private period: number;
 
     constructor(clobClient: ClobClient, clobApiCreds: ClobApiKeyCreds, userClientArgs?: any, marketClientArgs?: any) {
         this.clobClient = clobClient;
@@ -35,6 +37,8 @@ export class TradingBot {
         this.MAX_SELLS_PER_TOKEN = parseInt(process.env.MAX_SELLS_PER_TOKEN || "1", 10);
         this.BUY_SIZE = parseFloat(process.env.BUY_SIZE || "1");
         this.BUY_COOLDOWN_MS = parseInt(process.env.BUY_COOLDOWN_MS || "30000", 10); 
+        this.mode = parseInt(process.env.MODE || "1", 10); // Default to mode 1 (bullish), can be set to 2 (bearish) as needed
+        this.period = parseInt(process.env.PERIOD || "5", 10); // Default to 5-minute intervals, can be adjusted as needed
 
         // Client for user orders
         this.userClient = new RealTimeDataClient({
@@ -255,7 +259,7 @@ export class TradingBot {
             console.log(`Fetching tokens for interval: ${currentInterval}`);
             
             const response = await fetch(
-                `https://gamma-api.polymarket.com/events/slug/btc-updown-5m-${currentInterval}`,
+                `https://gamma-api.polymarket.com/events/slug/btc-updown-${this.period}m-${currentInterval}`,
                 {
                     method: "GET",
                     headers: { "Content-Type": "application/json" },
@@ -424,10 +428,13 @@ export class TradingBot {
         const secondsToNext = minutesToNext * 60 - currentSeconds;
         
        // console.log(`Time left: ${secondsToNext}s (${(secondsToNext / 60).toFixed(2)}min), Price: ${markPrice}`);
+        
 
         if (
-            (markPrice >= 0.61 && secondsToNext < 295)
-        ) {
+            ((this.mode ==2 || this.mode == 3) && (markPrice <= 0.41 && markPrice>=0.26 && secondsToNext < 295 ))
+            || (this.mode==1 && (markPrice>=0.55 && secondsToNext < 295))
+        )
+     {
             //console.log(`Buy condition met: price ${markPrice}, time ${(secondsToNext / 60).toFixed(2)}min`);
             return true;
         }
@@ -438,8 +445,15 @@ export class TradingBot {
     
     private shouldSell(entryPrice: number, markPrice: number): boolean {
         // Example: Execute sell trade if price moves 15% from entry
-        const threshold = -0.40;
-        return (markPrice - entryPrice) / entryPrice < threshold;
+        entryPrice = parseFloat(entryPrice.toFixed(2));
+
+        if((this.mode==2) && (markPrice <= 0.25 || markPrice >= 0.59)||
+           (this.mode==3) && (markPrice <= 0.20)){
+            return true;  
+        }
+        return false;
+        // const threshold = -0.40;
+        // return (markPrice - entryPrice) / entryPrice < threshold;
     }
 
    
