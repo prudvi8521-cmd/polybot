@@ -447,7 +447,7 @@ export class TradingBot {
        // console.log(`Time left: ${secondsToNext}s (${(secondsToNext / 60).toFixed(2)}min), Price: ${markPrice}`);
         
 
-        if ((this.mode == MODES.UNIDIRECTIONAL && (markPrice>=0.60 && secondsToNext < 295))||
+        if ((this.mode == MODES.UNIDIRECTIONAL && (markPrice>=0.58 && markPrice<=0.90 && secondsToNext < 295))||
             ((this.mode == MODES.COUNTERDIRECTIONAL && (markPrice <= 0.43 && secondsToNext < 295 ))||
             ((this.mode == MODES.BIDIRECTIONAL) && (markPrice <= 0.41 && markPrice>=0.26 && secondsToNext < 295 ))))
         {
@@ -463,7 +463,7 @@ export class TradingBot {
         // Example: Execute sell trade if price moves 15% from entry
         entryPrice = parseFloat(entryPrice.toFixed(2));
 
-        if(((this.mode == MODES.UNIDIRECTIONAL) && (markPrice <= 0.45))||
+        if(((this.mode == MODES.UNIDIRECTIONAL) && (markPrice <= 0.46))||
            ((this.mode == MODES.COUNTERDIRECTIONAL) && (markPrice <= 0.15))||
            ((this.mode == MODES.BIDIRECTIONAL) && (markPrice <= 0.15 || markPrice >= 0.59))){
             return true;  
@@ -538,12 +538,8 @@ export class TradingBot {
             console.error("Buy trade failed:", err);
             // Retry logic if failed
             this.buyOrderCountPerToken.set(asset_id, this.buyOrderCountPerToken.get(asset_id)! - 1);
-            this.totalBuys -= 1;
-            if (lastBuy == 0) {
-                this.lastBuyTimestamp.delete(asset_id);
-            } else {                                                
-                this.lastBuyTimestamp.set(asset_id, lastBuy);
-            }
+            this.totalBuys -= 1;                                            
+            this.lastBuyTimestamp.set(asset_id, lastBuy);
         }
         this.activeBuyOrders.delete(asset_id);
     }
