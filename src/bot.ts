@@ -173,24 +173,18 @@ export class TradingBot {
      */
     private startPeriodicMarketRefresh() {
         const scheduleNextRefresh = () => {
-            const now = new Date();
-            const currentMinutes = now.getMinutes(); // Add 1 minute to ensure we schedule for the next interval, not the current one at edges
-            const currentSeconds = now.getSeconds();
-            const currentMillis = now.getMilliseconds();
+            const now = Date.now();
+            const FIVE_MIN = 5 * 60 * 1000;
             
             // Calculate next 5-minute boundary
-            const nextIntervalMinutes = Math.ceil(currentMinutes / 5) * 5;
-            const minutesToAdd = nextIntervalMinutes == currentMinutes ? 5 : nextIntervalMinutes - currentMinutes;
-            
-            // Calculate milliseconds until next interval
-            const millisecondsUntilNext = (minutesToAdd * 60 - currentSeconds) * 1000 - currentMillis;
-            
-            console.log(`Market refresh scheduled in ${(millisecondsUntilNext / 1000).toFixed(2)} seconds (next interval at ${String((currentMinutes+minutesToAdd) % 60).padStart(2, '0')}:00)`);
+            const delay = Math.ceil(now / FIVE_MIN) * FIVE_MIN - now;
+                        
+            console.log(`Market refresh scheduled in ${(delay / 1000).toFixed(2)} seconds (next interval at ${String(new Date(now + delay).getMinutes()).padStart(2, '0')}:00)`);
             
             setTimeout(async () => {
                 await this.refreshMarketSubscriptions();
                 scheduleNextRefresh();
-            }, millisecondsUntilNext);
+            }, delay+300); // Add buffer to ensure we're in the next interval
         };
     
         scheduleNextRefresh();
@@ -463,7 +457,7 @@ export class TradingBot {
         // Example: Execute sell trade if price moves 15% from entry
         entryPrice = parseFloat(entryPrice.toFixed(2));
 
-        if(((this.mode == MODES.UNIDIRECTIONAL) && (markPrice <= 0.46))||
+        if(((this.mode == MODES.UNIDIRECTIONAL) && (markPrice <= 0.44))||
            ((this.mode == MODES.COUNTERDIRECTIONAL) && (markPrice <= 0.15))||
            ((this.mode == MODES.BIDIRECTIONAL) && (markPrice <= 0.15 || markPrice >= 0.59))){
             return true;  
