@@ -187,9 +187,9 @@ export class TradingBot {
             
             console.log(`Market refresh scheduled in ${(millisecondsUntilNext / 1000).toFixed(2)} seconds (next interval at ${String((currentMinutes+minutesToAdd) % 60).padStart(2, '0')}:00)`);
             
-            setTimeout(() => {
-                this.refreshMarketSubscriptions();
-                scheduleNextRefresh(); // Reschedule for next 5-minute interval
+            setTimeout(async () => {
+                await this.refreshMarketSubscriptions();
+                scheduleNextRefresh();
             }, millisecondsUntilNext);
         };
     
@@ -447,7 +447,7 @@ export class TradingBot {
        // console.log(`Time left: ${secondsToNext}s (${(secondsToNext / 60).toFixed(2)}min), Price: ${markPrice}`);
         
 
-        if ((this.mode == MODES.UNIDIRECTIONAL && (markPrice>=0.58 && markPrice<=0.90 && secondsToNext < 295))||
+        if ((this.mode == MODES.UNIDIRECTIONAL && (markPrice>=0.60 && secondsToNext < 295))||
             ((this.mode == MODES.COUNTERDIRECTIONAL && (markPrice <= 0.43 && secondsToNext < 295 ))||
             ((this.mode == MODES.BIDIRECTIONAL) && (markPrice <= 0.41 && markPrice>=0.26 && secondsToNext < 295 ))))
         {
