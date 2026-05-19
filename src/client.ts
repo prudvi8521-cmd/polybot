@@ -2,7 +2,7 @@ import WebSocket, { MessageEvent, CloseEvent, ErrorEvent } from "isomorphic-ws";
 import { SubscriptionMessage, Message, ConnectionStatus } from "./model";
 
 const DEFAULT_HOST = "wss://ws-subscriptions-clob.polymarket.com/ws/user";
-const DEFAULT_PING_INTERVAL = 7;
+const DEFAULT_PING_INTERVAL = 5000;
 
 /**
  * Interface representing the arguments for initializing a RealTimeDataClient.
@@ -68,6 +68,7 @@ export class RealTimeDataClient {
 
     /** WebSocket instance */
     private ws!: WebSocket;
+    pingTimer: NodeJS.Timeout | undefined;
 
     /**
      * Constructs a new RealTimeDataClient instance.
@@ -140,13 +141,17 @@ export class RealTimeDataClient {
     /**
      * Sends a ping message to keep the connection alive.
      */
-    private ping = async () => {
-        if (this.ws.readyState !== WebSocket.OPEN) {
-            return console.warn("Socket not open. Ready state is:", this.ws.readyState);
-        }
+    private ping = () => {
+        this.pingTimer = setInterval(() => {
+            if (this.ws.readyState !== WebSocket.OPEN) {
+                console.warn("Socket not open:", this.ws.readyState);
+                clearInterval(this.pingTimer);
+                return;
+            }
 
-        this.ws.ping();
-        await delay(this.pingInterval);
+            this.ws.ping();
+            console.log("ping sent");
+        }, this.pingInterval);
     };
 
     /**
@@ -231,6 +236,3 @@ export class RealTimeDataClient {
     }
 }
 
-function delay(ms: number) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}

@@ -8,6 +8,7 @@ const MODES = {
     UNIDIRECTIONAL: "UNIDIRECTIONAL",
     COUNTERDIRECTIONAL: "COUNTERDIRECTIONAL",
     BIDIRECTIONAL: "BIDIRECTIONAL",
+    LIMIT: "LIMIT", 
 } as const;
 
 type TradingMode = typeof MODES[keyof typeof MODES];
@@ -16,6 +17,7 @@ const modeMap: Record<number, TradingMode> = {
     1: MODES.UNIDIRECTIONAL,
     [-1]: MODES.COUNTERDIRECTIONAL,
     2: MODES.BIDIRECTIONAL,
+    0: MODES.LIMIT, 
 };
 
 
@@ -36,7 +38,9 @@ export class TradingBot {
     private BUY_SIZE: number;
     private MAX_SELLS_PER_TOKEN: number;
     private BUY_COOLDOWN_MS :number;
+    private SELL_COOLDOWN_MS :number;
     private lastBuyTimestamp: Map<string, number> = new Map();
+    private lastSellTimestamp: Map<string, number> = new Map();
     private intervalRealizedPnL: number = 0;
     private totalRealizedPnL: number = 0;
     private totalBuys: number = 0;
@@ -44,6 +48,7 @@ export class TradingBot {
     private isfirstConnect: boolean = true;
     private mode: TradingMode; 
     private period: number;
+    private limitSellActive: Set<string> = new Set(); 
 
     constructor(clobClient: ClobClient, clobApiCreds: ClobApiKeyCreds, userClientArgs?: any, marketClientArgs?: any) {
         this.clobClient = clobClient;
@@ -53,6 +58,7 @@ export class TradingBot {
         this.MAX_SELLS_PER_TOKEN = parseInt(process.env.MAX_SELLS_PER_TOKEN || "1", 10);
         this.BUY_SIZE = parseFloat(process.env.BUY_SIZE || "1");
         this.BUY_COOLDOWN_MS = parseInt(process.env.BUY_COOLDOWN_MS || "30000", 10); 
+        this.SELL_COOLDOWN_MS = parseInt(process.env.SELL_COOLDOWN_MS || "1000", 10);
         this.period = parseInt(process.env.PERIOD || "5", 10); // Default to 5-minute intervals, can be adjusted as needed
         const modeNumber = parseInt(process.env.MODE || "1", 10);
         this.mode = modeMap[modeNumber] || MODES.UNIDIRECTIONAL;
@@ -141,7 +147,7 @@ export class TradingBot {
             console.log(message.status);
         }
 
-        if (message.side === "BUY" && message.status === "CONFIRMED") {
+        if (message.side === "BUY" && message.status === "MATCHED") {//using MATCHED instead of CONFIRMED to reduce latency though can be inaccurate if fails.
             const data = message;
             this.handleNewOrderOrMarketUpdate(data);
         }
@@ -162,7 +168,7 @@ export class TradingBot {
             const data = message;
             // Handle price updates
             this.updateMarkPrice(data);
-            this.evaluatePositions();
+            this.evaluatePositions(data);
         }
     };
 
@@ -209,7 +215,7 @@ export class TradingBot {
                     if(pos.size === -1){
                         continue; // Skip positions that were never bought
                     }
-                    const pnl = (0 - pos.entryPrice) * pos.size;
+                    const pnl = (0 - pos.entryPrice) * pos.size ;
                     this.intervalRealizedPnL += pnl;
                 }
             }
@@ -240,6 +246,8 @@ export class TradingBot {
             this.sellOrderCountPerToken.clear();
             this.intervalRealizedPnL = 0;
             this.lastBuyTimestamp.clear();
+            this.lastSellTimestamp.clear();
+            this.limitSellActive.clear();
             
             console.log("All subscriptions cleared");
 
@@ -306,6 +314,15 @@ export class TradingBot {
      */
     private handleNewOrderOrMarketUpdate(data: any) {
         // Extract token/market_id from the order data
+        if (this.mode === MODES.LIMIT && data.trader_side == "MAKER" && data.maker_orders && Array.isArray(data.maker_orders)) {
+            console.log(data)
+            data = data.maker_orders.find((o: { maker_address: string; }) => o.maker_address?.toLowerCase() === process.env.FUNDER_ADDRESS?.toLowerCase());
+            console.log(data)
+            data.size=data.matched_amount;
+            if (data.side=="SELL"){
+                this.limitSellActive.delete(data.asset_id);
+            }
+        }
         const token = data.asset_id;
         const price = data.price ? parseFloat(data.price) : -1; 
         const size = data.size ? parseFloat(data.size) : -1; 
@@ -396,8 +413,8 @@ export class TradingBot {
     /**
      * Evaluate current positions and execute trades if conditions are met
      */
-    private evaluatePositions() {
-        //console.log("Evaluating positions...");
+    private evaluatePositions(data: any) {
+        // console.log("Evaluating positions against current market data...");
 
         for (const [asset_id, positionsArray] of this.positions) {
             const markPrice = this.markPrices.get(asset_id);
@@ -413,10 +430,56 @@ export class TradingBot {
                 }
             }
         }
+
+        if (this.mode === MODES.LIMIT && this.limitSellActive.size > 0) {// stop-loss for limit orders 
+
+            //  console.log("Evaluating limit sell orders...");
+             data= data.price_changes.find((p: { asset_id: string; }) => this.limitSellActive.has(p.asset_id));
+             if (!data) {
+                return;
+             }
+             const asset_id = data.asset_id;
+             const markPrice =  this.markPrices.get(asset_id) ?? -1;
+
+             if (markPrice < 0.12) {
+
+                    console.log(`Price dropped significantly for ${asset_id} ( mark: ${markPrice}), executing sell at market price to minimize losses. Sell count: ${this.sellOrderCountPerToken.get(asset_id)}/${this.MAX_SELLS_PER_TOKEN}`);
+                    
+                    this.clobClient.cancelMarketOrders({asset_id:asset_id}); // Cancel any existing sell orders for this token to avoid conflicts
+                    
+                    const now = Date.now();
+                    const lastSell = this.lastSellTimestamp.get(asset_id) || 0;
+
+                    if (now - lastSell < this.SELL_COOLDOWN_MS) {
+                        //console.log(`Cooldown active for ${asset_id}, skipping sell`);
+                        return;
+                    }
+
+                    this.lastSellTimestamp.set(asset_id, now);
+                    
+                    this.limitSellActive.delete(asset_id); 
+
+                    try {   
+                        this.clobClient.createAndPostMarketOrder(
+                            {
+                                tokenID: asset_id,
+                                side: Side.SELL,
+                                amount: this.BUY_SIZE-0.01,
+                                price: 0.05, //worst-price limit (slippage protection)
+                            }
+                        );
+                    }
+
+                    catch(err){
+                        console.error(`Emergency sell failed :`, err);
+                        this.limitSellActive.add(asset_id); // Re-add to attempt again 
+                    }
+                }
+        }
     }
 
  
-    private shouldExecuteTrade(entryPrice: number, markPrice: number): boolean {
+    private shouldExecuteTrade(entryPrice: number, markPrice: number): boolean{
         // If position is -1, no position taken yet - decide on BUY
         if (entryPrice === -1) {
             return this.shouldBuy(markPrice);
@@ -427,7 +490,7 @@ export class TradingBot {
     }
 
    
-    private shouldBuy(markPrice: number): boolean {
+    private shouldBuy(markPrice: number): boolean{
         // Calculate time remaining until next 5-minute mark
 
         const now = new Date();
@@ -443,7 +506,8 @@ export class TradingBot {
 
         if ((this.mode == MODES.UNIDIRECTIONAL && (markPrice>=0.60 && secondsToNext < 295))||
             ((this.mode == MODES.COUNTERDIRECTIONAL && (markPrice <= 0.43 && secondsToNext < 295 ))||
-            ((this.mode == MODES.BIDIRECTIONAL) && (markPrice <= 0.41 && markPrice>=0.26 && secondsToNext < 295 ))))
+            ((this.mode == MODES.BIDIRECTIONAL) && (markPrice <= 0.41 && markPrice>=0.26 && secondsToNext < 295 ))||
+            (this.mode == MODES.LIMIT && secondsToNext > 60)))
         {
             //console.log(`Buy condition met: price ${markPrice}, time ${(secondsToNext / 60).toFixed(2)}min`);
             return true;
@@ -457,9 +521,10 @@ export class TradingBot {
         // Example: Execute sell trade if price moves 15% from entry
         entryPrice = parseFloat(entryPrice.toFixed(2));
 
-        if(((this.mode == MODES.UNIDIRECTIONAL) && (markPrice <= 0.44))||
+        if(((this.mode == MODES.UNIDIRECTIONAL) && (markPrice <= 0.39))||
            ((this.mode == MODES.COUNTERDIRECTIONAL) && (markPrice <= 0.15))||
-           ((this.mode == MODES.BIDIRECTIONAL) && (markPrice <= 0.15 || markPrice >= 0.59))){
+           ((this.mode == MODES.BIDIRECTIONAL) && (markPrice <= 0.15 || (markPrice-entryPrice)/entryPrice >= 0.20))||
+           (this.mode == MODES.LIMIT)){
             return true;  
         }
         return false;
@@ -499,9 +564,9 @@ export class TradingBot {
             return;
         }
 
-        if(this.lastBuyTimestamp.size > 0){// temp check to limit buy to 1
-            return;
-        }
+        // if(this.lastBuyTimestamp.size > 0){// temp check to limit buy to 1
+        //     return;
+        // }
 
         this.activeBuyOrders.add(asset_id);
         this.buyOrderCountPerToken.set(asset_id, currentBuyCount + 1);
@@ -509,18 +574,33 @@ export class TradingBot {
         this.lastBuyTimestamp.set(asset_id, now);
 
         try {
-            console.log(`Executing BUY trade for ${asset_id} at price ${markPrice} and size ${size}. Buy count: ${this.buyOrderCountPerToken.get(asset_id)}/${this.MAX_BUYS_PER_TOKEN}`);
+            var response; 
 
-            const response = await this.clobClient.createAndPostMarketOrder(
-                {
-                    tokenID: asset_id,
-                    side: Side.BUY,
-                    amount: size,
-                    price: 0.80, // worst-price limit (slippage protection)
-                },
-                { tickSize: "0.01", negRisk: false },
-                OrderType.FAK,	//Fill-Or-Kill — must fill immediately and entirely, or cancel
-            );
+            if (this.mode != MODES.LIMIT) {
+                console.log(`Executing BUY trade for ${asset_id} at price ${markPrice} and size ${size}. Buy count: ${this.buyOrderCountPerToken.get(asset_id)}/${this.MAX_BUYS_PER_TOKEN}`);
+                response = await this.clobClient.createAndPostMarketOrder(
+                    {
+                        tokenID: asset_id,
+                        side: Side.BUY,
+                        amount: size,
+                        price: 0.80, // worst-price limit (slippage protection)
+                    },
+                    { tickSize: "0.01", negRisk: false },
+                    OrderType.FAK,	//Fill-Or-Kill — must fill immediately and entirely, or cancel
+                );
+            }
+
+            else{
+                console.log(`Executing LIMIT BUY trade for ${asset_id} at price 0.30 and size ${size}. Buy count: ${this.buyOrderCountPerToken.get(asset_id)}/${this.MAX_BUYS_PER_TOKEN}`);
+                response = await this.clobClient.createAndPostOrder(
+                    {
+                        tokenID: asset_id,
+                        side: Side.BUY,
+                        size: size,
+                        price: 0.30,
+                    },
+                );
+            }
 
             console.log("Buy Order ID:", response.orderID);
 
@@ -539,7 +619,7 @@ export class TradingBot {
     }
 
     private async executeSellTrade(asset_id: string, markPrice: number, size: number, entryPrice: number) {
-        //  protection
+        // console.log(`Attempting to sell ${asset_id}...`);
         if (this.activeSellOrders.has(asset_id)) {
             //console.log(`Sell already in progress or completed for ${asset_id}, skipping`);
             return;
@@ -552,34 +632,61 @@ export class TradingBot {
             return;
         }
 
+        const now = Date.now();
+        const lastSell = this.lastSellTimestamp.get(asset_id) || 0;
+
+        if (now - lastSell < this.SELL_COOLDOWN_MS) {
+            //console.log(`Cooldown active for ${asset_id}, skipping sell`);
+            return;
+        }
+
         this.activeSellOrders.add(asset_id);
         this.sellOrderCountPerToken.set(asset_id, currentSellCount + 1);  
         this.totalSells += 1;
         this.removePosition(asset_id, size, entryPrice);
+
+        this.lastSellTimestamp.set(asset_id, now);
        
-        var pnl = (markPrice - entryPrice) * size;
+        var pnl = (markPrice - entryPrice) * size - 0.06; // Subtracting estimated fees for buy and sell
         this.intervalRealizedPnL += pnl;
 
         try {
             const truncated_size = Math.floor(size * 100) / 100;
+            var response;
 
-            console.log(`Executing trade for ${asset_id} at price ${markPrice} and size ${truncated_size}. Sell count: ${this.sellOrderCountPerToken.get(asset_id)}/${this.MAX_SELLS_PER_TOKEN}`);
+            if (this.mode != MODES.LIMIT) {
+                console.log(`Executing trade for ${asset_id} at price ${markPrice} and size ${truncated_size}. Sell count: ${this.sellOrderCountPerToken.get(asset_id)}/${this.MAX_SELLS_PER_TOKEN}`);
+                response = await this.clobClient.createAndPostMarketOrder(
+                    {
+                        tokenID: asset_id,
+                        side: Side.SELL,
+                        amount: truncated_size, 
+                        price: 0.05, //worst-price limit (slippage protection)
 
-            const response = await this.clobClient.createAndPostMarketOrder(
-                {
-                    tokenID: asset_id,
-                    side: Side.SELL,
-                    amount: truncated_size,
-                    price: 0.05, //worst-price limit (slippage protection)
+                    },
+                    { tickSize: "0.01", negRisk: false },
+                    OrderType.FAK, //Fill-And-Kill — fill as much as possible immediately, and cancel any unfilled portion
+                );
+            }
 
-                },
-                { tickSize: "0.01", negRisk: false },
-                OrderType.FAK, //Fill-And-Kill — fill as much as possible immediately, and cancel any unfilled portion
-            );
+            else{
 
-            console.log("Order ID:", response.orderID);
+                    this.limitSellActive.add(asset_id);
+                    console.log(`Executing LIMIT SELL trade for ${asset_id} at price ${entryPrice*1.30} and size ${this.BUY_SIZE-0.01}. Sell count: ${this.sellOrderCountPerToken.get(asset_id)}/${this.MAX_SELLS_PER_TOKEN}`);
+                    this.clobClient.cancelAll();
+                    response = await this.clobClient.createAndPostOrder(
+                        {
+                            tokenID: asset_id,
+                            side: Side.SELL,
+                            size: this.BUY_SIZE-0.01,
+                            price: entryPrice*1.30, // Target 20% profit
+                        }
+                    );
+                }
 
-            if (response.status == 400){
+
+
+            if (response && response.status == 400){
                 throw new Error("Sell trade failed with status 400.");
             }
             
@@ -590,6 +697,7 @@ export class TradingBot {
             this.sellOrderCountPerToken.set(asset_id, this.sellOrderCountPerToken.get(asset_id)! - 1);
             this.totalSells -= 1;
             this.intervalRealizedPnL -= pnl;
+            //this.lastSellTimestamp.set(asset_id, lastSell); // (e.g., keep cooldown in case of failure too to prevent rapid retries)
         }
         this.activeSellOrders.delete(asset_id);
         console.log(`[REALIZED] PnL: ${pnl.toFixed(2)}`);
