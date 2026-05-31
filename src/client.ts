@@ -150,7 +150,7 @@ export class RealTimeDataClient {
             }
 
             this.ws.ping();
-            console.log("ping sent");
+            //console.log("ping sent");
         }, this.pingInterval);
     };
 
