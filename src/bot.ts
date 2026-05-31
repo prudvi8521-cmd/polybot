@@ -421,7 +421,7 @@ export class TradingBot {
     /**
      * Evaluate current positions and execute trades if conditions are met
      */
-    private evaluatePositions(data: any) {
+    private async evaluatePositions(data: any) {
         // console.log("Evaluating positions against current market data...");
 
         for (const [asset_id, positionsArray] of this.positions) {
