@@ -1,7 +1,7 @@
 import { RealTimeDataClient } from "./client";
 import { ClobApiKeyCreds, UserMessage, MarketMessage } from "./model";
 import { Wallet } from "ethers";
-import { ClobClient, Side, OrderType } from "@polymarket/clob-client-v2";
+import { ClobClient, Side, OrderType, AssetType } from "@polymarket/clob-client-v2";
 
 
 const MODES = {
@@ -49,6 +49,7 @@ export class TradingBot {
     private mode: TradingMode; 
     private period: number;
     private limitSellActive: Set<string> = new Set(); 
+    private isLimitCancelled: boolean = false;
 
     constructor(clobClient: ClobClient, clobApiCreds: ClobApiKeyCreds, userClientArgs?: any, marketClientArgs?: any) {
         this.clobClient = clobClient;
@@ -135,6 +136,12 @@ export class TradingBot {
         if (this.isfirstConnect) {
             this.startPeriodicMarketRefresh();
             this.isfirstConnect = false;
+        }
+        else if (this.subscribedTokens.size > 0) {
+            // Re-subscribe to markets on reconnect 
+            for (const token of this.subscribedTokens) {
+                this.subscribeToMarkets(token);
+            }
         }
     };
 
@@ -248,6 +255,7 @@ export class TradingBot {
             this.lastBuyTimestamp.clear();
             this.lastSellTimestamp.clear();
             this.limitSellActive.clear();
+            this.isLimitCancelled = false;
             
             console.log("All subscriptions cleared");
 
@@ -405,7 +413,7 @@ export class TradingBot {
             const truncatedPrice = Math.floor(midPrice * 100) / 100;
             
             this.markPrices.set(data.price_changes[key].asset_id, truncatedPrice);
-            //console.log(`Updated price for ${data.price_changes[key].asset_id}: ${truncatedPrice}`);
+            //  console.log(`Updated price for ${data.price_changes[key].asset_id}: ${truncatedPrice}`);
         }
     }
 
@@ -441,12 +449,10 @@ export class TradingBot {
              const asset_id = data.asset_id;
              const markPrice =  this.markPrices.get(asset_id) ?? -1;
 
-             if (markPrice < 0.12) {
+             if (markPrice < 0.12){ // Emergency sell if price drops too much before next interval to prevent large losses
 
                     console.log(`Price dropped significantly for ${asset_id} ( mark: ${markPrice}), executing sell at market price to minimize losses. Sell count: ${this.sellOrderCountPerToken.get(asset_id)}/${this.MAX_SELLS_PER_TOKEN}`);
-                    
-                    this.clobClient.cancelMarketOrders({asset_id:asset_id}); // Cancel any existing sell orders for this token to avoid conflicts
-                    
+                                        
                     const now = Date.now();
                     const lastSell = this.lastSellTimestamp.get(asset_id) || 0;
 
@@ -459,14 +465,23 @@ export class TradingBot {
                     
                     this.limitSellActive.delete(asset_id); 
 
+                    const balanceData = await this.clobClient.getBalanceAllowance({
+                        token_id: asset_id,
+                        asset_type: AssetType.CONDITIONAL
+                    });
+                    const totalShares = Number(balanceData.balance)/1000000;
+
+                    this.clobClient.cancelMarketOrders({asset_id:asset_id}); // Cancel any existing sell orders for this token to avoid conflicts
+
                     try {   
                         this.clobClient.createAndPostMarketOrder(
                             {
                                 tokenID: asset_id,
                                 side: Side.SELL,
-                                amount: this.BUY_SIZE-0.01,
+                                amount: totalShares,
                                 price: 0.05, //worst-price limit (slippage protection)
                             }
+                        ,{ tickSize: "0.01", negRisk: false }, OrderType.FAK
                         );
                     }
 
@@ -493,23 +508,17 @@ export class TradingBot {
     private shouldBuy(markPrice: number): boolean{
         // Calculate time remaining until next 5-minute mark
 
-        const now = new Date();
-        const currentMinutes = now.getMinutes();
-        const currentSeconds = now.getSeconds();
-        
-        const nextIntervalMinutes = Math.ceil(currentMinutes / 5) * 5;
-        const minutesToNext = nextIntervalMinutes === currentMinutes ? 5 : nextIntervalMinutes - currentMinutes;
-        const secondsToNext = minutesToNext * 60 - currentSeconds;
         
        // console.log(`Time left: ${secondsToNext}s (${(secondsToNext / 60).toFixed(2)}min), Price: ${markPrice}`);
-        
+       
+        const secondsToNext = this.secondsToNext5Min();
 
         if ((this.mode == MODES.UNIDIRECTIONAL && (markPrice>=0.60 && secondsToNext < 295))||
-            ((this.mode == MODES.COUNTERDIRECTIONAL && (markPrice <= 0.43 && secondsToNext < 295 ))||
+            ((this.mode == MODES.COUNTERDIRECTIONAL && (markPrice <= 0.43))||
             ((this.mode == MODES.BIDIRECTIONAL) && (markPrice <= 0.41 && markPrice>=0.26 && secondsToNext < 295 ))||
-            (this.mode == MODES.LIMIT && secondsToNext > 60)))
+            (this.mode == MODES.LIMIT)))
         {
-            //console.log(`Buy condition met: price ${markPrice}, time ${(secondsToNext / 60).toFixed(2)}min`);
+            // console.log(`Buy condition met: price ${markPrice}, time ${(secondsToNext / 60).toFixed(2)}min`);
             return true;
         }
         
@@ -521,7 +530,7 @@ export class TradingBot {
         // Example: Execute sell trade if price moves 15% from entry
         entryPrice = parseFloat(entryPrice.toFixed(2));
 
-        if(((this.mode == MODES.UNIDIRECTIONAL) && (markPrice <= 0.39))||
+        if(((this.mode == MODES.UNIDIRECTIONAL) && (markPrice <= 0.45))||
            ((this.mode == MODES.COUNTERDIRECTIONAL) && (markPrice <= 0.15))||
            ((this.mode == MODES.BIDIRECTIONAL) && (markPrice <= 0.15 || (markPrice-entryPrice)/entryPrice >= 0.20))||
            (this.mode == MODES.LIMIT)){
@@ -547,6 +556,17 @@ export class TradingBot {
         if (this.activeBuyOrders.has(asset_id)) {
             //console.log(`Buy already in progress or completed for  ${asset_id}, skipping buy`);
             return;
+        }
+
+        if(this.mode == MODES.LIMIT && this.secondsToNext5Min() < 60 && this.isLimitCancelled==false &&(this.sellOrderCountPerToken.get(asset_id) || 0) == 0){ 
+            console.log(`canceling existing orders`);
+            try{
+                this.clobClient.cancelAll();        
+                this.isLimitCancelled=true;
+            }
+            catch{
+                console.error(`Failed to cancel orders for ${asset_id}:`);
+            };
         }
 
         // Check if we've exceeded max buys for this token
@@ -670,19 +690,18 @@ export class TradingBot {
             }
 
             else{
-
-                    this.limitSellActive.add(asset_id);
-                    console.log(`Executing LIMIT SELL trade for ${asset_id} at price ${entryPrice*1.30} and size ${this.BUY_SIZE-0.01}. Sell count: ${this.sellOrderCountPerToken.get(asset_id)}/${this.MAX_SELLS_PER_TOKEN}`);
-                    this.clobClient.cancelAll();
-                    response = await this.clobClient.createAndPostOrder(
-                        {
-                            tokenID: asset_id,
-                            side: Side.SELL,
-                            size: this.BUY_SIZE-0.01,
-                            price: entryPrice*1.30, // Target 20% profit
-                        }
-                    );
-                }
+                this.limitSellActive.add(asset_id);
+                console.log(`Executing LIMIT SELL trade for ${asset_id} at price ${entryPrice*1.4} and size ${this.BUY_SIZE-0.01}. Sell count: ${this.sellOrderCountPerToken.get(asset_id)}/${this.MAX_SELLS_PER_TOKEN}`);
+                this.clobClient.cancelAll();
+                response = await this.clobClient.createAndPostOrder(
+                    {
+                        tokenID: asset_id,
+                        side: Side.SELL,
+                        size: this.BUY_SIZE-0.01,
+                        price: entryPrice*1.4, // Target 15% profit
+                    }
+                );
+            }
 
 
 
@@ -732,6 +751,18 @@ export class TradingBot {
                 this.positions.delete(asset_id);
             }
         }
+    }
+
+
+    private secondsToNext5Min(): number {
+        const now = new Date();
+        const currentMinutes = now.getMinutes();
+        const currentSeconds = now.getSeconds();
+        
+        const nextIntervalMinutes = Math.ceil(currentMinutes / 5) * 5;
+        const minutesToNext = nextIntervalMinutes === currentMinutes ? 5 : nextIntervalMinutes - currentMinutes;
+        const secondsToNext = minutesToNext * 60 - currentSeconds;
+        return secondsToNext;
     }
 
     /**

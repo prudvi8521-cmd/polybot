@@ -2,7 +2,7 @@ import WebSocket, { MessageEvent, CloseEvent, ErrorEvent } from "isomorphic-ws";
 import { SubscriptionMessage, Message, ConnectionStatus } from "./model";
 
 const DEFAULT_HOST = "wss://ws-subscriptions-clob.polymarket.com/ws/user";
-const DEFAULT_PING_INTERVAL = 5000;
+const DEFAULT_PING_INTERVAL = 3000;
 
 /**
  * Interface representing the arguments for initializing a RealTimeDataClient.
