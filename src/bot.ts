@@ -2,6 +2,8 @@ import { RealTimeDataClient } from "./client";
 import { ClobApiKeyCreds, UserMessage, MarketMessage } from "./model";
 import { Wallet } from "ethers";
 import { ClobClient, Side, OrderType, AssetType } from "@polymarket/clob-client-v2";
+import axios from "axios";
+
 
 
 const MODES = {
@@ -260,6 +262,21 @@ export class TradingBot {
             console.log("All subscriptions cleared");
 
 
+            {
+                const lastSmoothed = await this.getLastSmoothedSwing();
+                if (lastSmoothed !== null && lastSmoothed < 40) {
+                    this.mode = MODES.UNIDIRECTIONAL;
+                    this.BUY_SIZE=1
+                } else {
+                    this.mode = MODES.LIMIT;
+                    this.BUY_SIZE=5.01
+                }
+            }
+
+            console.log(`Swing: ${await this.getLastSmoothedSwing()}`);
+            console.log(`Bot mode for next interval: ${this.mode}`);
+
+
             // Calling polymarket API to get new token IDs for the next BTC 5-minute interval and subscribe to them
             const tokenIds = await this.fetchTokenIdsFromApi();
             
@@ -449,7 +466,7 @@ export class TradingBot {
              const asset_id = data.asset_id;
              const markPrice =  this.markPrices.get(asset_id) ?? -1;
 
-             if (markPrice < 0.12){ // Emergency sell if price drops too much before next interval to prevent large losses
+             if (markPrice < 0.42){ // Emergency sell if price drops too much before next interval to prevent large losses
 
                     console.log(`Price dropped significantly for ${asset_id} ( mark: ${markPrice}), executing sell at market price to minimize losses. Sell count: ${this.sellOrderCountPerToken.get(asset_id)}/${this.MAX_SELLS_PER_TOKEN}`);
                                         
@@ -513,7 +530,7 @@ export class TradingBot {
        
         const secondsToNext = this.secondsToNext5Min();
 
-        if ((this.mode == MODES.UNIDIRECTIONAL && (markPrice>=0.60 && secondsToNext < 295))||
+        if ((this.mode == MODES.UNIDIRECTIONAL && (markPrice>=0.65 && secondsToNext < 298 && secondsToNext > 180))||
             ((this.mode == MODES.COUNTERDIRECTIONAL && (markPrice <= 0.43))||
             ((this.mode == MODES.BIDIRECTIONAL) && (markPrice <= 0.41 && markPrice>=0.26 && secondsToNext < 295 ))||
             (this.mode == MODES.LIMIT)))
@@ -530,7 +547,7 @@ export class TradingBot {
         // Example: Execute sell trade if price moves 15% from entry
         entryPrice = parseFloat(entryPrice.toFixed(2));
 
-        if(((this.mode == MODES.UNIDIRECTIONAL) && (markPrice <= 0.45))||
+        if(((this.mode == MODES.UNIDIRECTIONAL) && (markPrice <= 0.40))||
            ((this.mode == MODES.COUNTERDIRECTIONAL) && (markPrice <= 0.15))||
            ((this.mode == MODES.BIDIRECTIONAL) && (markPrice <= 0.15 || (markPrice-entryPrice)/entryPrice >= 0.20))||
            (this.mode == MODES.LIMIT)){
@@ -584,9 +601,9 @@ export class TradingBot {
             return;
         }
 
-        // if(this.lastBuyTimestamp.size > 0){// temp check to limit buy to 1
-        //     return;
-        // }
+        if( this.mode != MODES.LIMIT && this.lastBuyTimestamp.size > 0){// temp check to limit buy to 1
+            return;
+        }
 
         this.activeBuyOrders.add(asset_id);
         this.buyOrderCountPerToken.set(asset_id, currentBuyCount + 1);
@@ -617,7 +634,7 @@ export class TradingBot {
                         tokenID: asset_id,
                         side: Side.BUY,
                         size: size,
-                        price: 0.30,
+                        price: 0.07,
                     },
                 );
             }
@@ -698,7 +715,7 @@ export class TradingBot {
                         tokenID: asset_id,
                         side: Side.SELL,
                         size: this.BUY_SIZE-0.01,
-                        price: entryPrice*1.4, // Target 15% profit
+                        price: entryPrice*14, // Target 15% profit
                     }
                 );
             }
@@ -765,6 +782,115 @@ export class TradingBot {
         return secondsToNext;
     }
 
+
+    private async getLastSmoothedSwing(): Promise<number | null> {
+        try {
+            const candles = await this.fetchRecentCandles(); // uses existing utility
+            if (!candles || candles.length === 0) return null;
+
+            // call computeSwingSmooth with defaults (or pass custom options)
+            const { lastSmoothed } = this.computeSwingSmooth(candles);
+            return lastSmoothed;
+        } catch (err) {
+            console.error("getLastSmoothedSwing error:", err);
+            return null;
+        }
+    }
+
+    private async fetchRecentCandles(
+        product = "BTC-USD",
+        granularity = 300
+    ): Promise<Array<{ time: number; low: number; high: number; open: number; close: number; volume: number }>> {
+        try {
+            const resp = await axios.get(`https://api.exchange.coinbase.com/products/${product}/candles`, {
+                params: { granularity },
+                timeout: 10_000,
+            });
+
+            if (!resp || !Array.isArray(resp.data)) return [];
+
+            // Coinbase returns candles as [time, low, high, open, close, volume] newest first
+            const raw = resp.data as any[];
+
+            // take first 5 entries (newest first), then map and sort oldest->newest
+            const slice = raw.slice(1, 11);
+            const candles = slice.map((c: any[]) => ({
+                time: Number(c[0]),
+                low: Number(c[1]),
+                high: Number(c[2]),
+                open: Number(c[3]),
+                close: Number(c[4]),
+                volume: Number(c[5]),
+            }));
+
+            return candles.sort((a, b) => a.time - b.time);
+        } catch (err) {
+            console.error("fetchRecentCandles error:", err);
+            return [];
+        }
+    }
+
+     
+    private computeSwingSmooth(
+        candles: Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }>,
+        options: { swingSmooth?: number; oppWickWeight?: number; thresholdValue?: number; epsilon?: number } = {}
+    ): { rawSwing: number[]; smoothedSwing: number[]; lastSmoothed: number | null; thresholdValue: number } {
+        const {
+            swingSmooth = 5,
+            oppWickWeight = 3.0,
+            thresholdValue = 40.0,
+            epsilon = 0.000001,
+        } = options;
+
+        if (!Array.isArray(candles) || candles.length === 0) {
+            return { rawSwing: [], smoothedSwing: [], lastSmoothed: null, thresholdValue };
+        }
+
+        const rawSwing: number[] = candles.map((bar) => {
+            const high = Number(bar.high);
+            const low = Number(bar.low);
+            const open = Number(bar.open);
+            const close = Number(bar.close);
+
+            const topWick = high - Math.max(open, close);
+            const bottomWick = Math.min(open, close) - low;
+            const bodySize = Math.abs(close - open);
+
+            let weightedWicks = 0.0;
+            if (close >= open) {
+                weightedWicks = topWick * 0.5 + bottomWick * oppWickWeight;
+            } else {
+                weightedWicks = topWick * oppWickWeight + bottomWick * 0.5;
+            }
+
+            const adjustedRange = weightedWicks + bodySize + epsilon;
+            const raw = (weightedWicks / (adjustedRange * adjustedRange)) * 10000;
+
+            if (!isFinite(raw) || Number.isNaN(raw)) return 0;
+            return raw;
+        });
+
+        // EMA implementation
+        function emaSeries(values: number[], period: number): number[] {
+            if (values.length === 0) return [];
+            const p = Math.max(1, Math.floor(period));
+            const alpha = 2 / (p + 1);
+            const out: number[] = new Array(values.length);
+            out[0] = values[0];
+            for (let i = 1; i < values.length; i++) {
+                out[i] = out[i - 1] + alpha * (values[i] - out[i - 1]);
+            }
+            return out;
+        }
+
+        const smoothedSwing = emaSeries(rawSwing, swingSmooth);
+        const lastSmoothed = smoothedSwing.length ? smoothedSwing[smoothedSwing.length - 1] : null;
+
+        return { rawSwing, smoothedSwing, lastSmoothed, thresholdValue };
+    }
+
+ 
+    
     /**
      * Stop the bot
      */
