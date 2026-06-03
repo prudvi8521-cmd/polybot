@@ -864,7 +864,7 @@ export class TradingBot {
             }
 
             const adjustedRange = weightedWicks + bodySize + epsilon;
-            const raw = (weightedWicks / (adjustedRange * adjustedRange)) * 10000;
+            const raw = (Math.pow(weightedWicks, 1.55) / (Math.pow(adjustedRange, 2))) * 1000;
 
             if (!isFinite(raw) || Number.isNaN(raw)) return 0;
             return raw;
