@@ -466,7 +466,7 @@ export class TradingBot {
              const asset_id = data.asset_id;
              const markPrice =  this.markPrices.get(asset_id) ?? -1;
 
-             if (markPrice < 0.42){ // Emergency sell if price drops too much before next interval to prevent large losses
+             if (markPrice < 0.18){ // Emergency sell if price drops too much before next interval to prevent large losses
 
                     console.log(`Price dropped significantly for ${asset_id} ( mark: ${markPrice}), executing sell at market price to minimize losses. Sell count: ${this.sellOrderCountPerToken.get(asset_id)}/${this.MAX_SELLS_PER_TOKEN}`);
                                         
@@ -634,7 +634,7 @@ export class TradingBot {
                         tokenID: asset_id,
                         side: Side.BUY,
                         size: size,
-                        price: 0.07,
+                        price: 0.30,
                     },
                 );
             }
@@ -715,7 +715,7 @@ export class TradingBot {
                         tokenID: asset_id,
                         side: Side.SELL,
                         size: this.BUY_SIZE-0.01,
-                        price: entryPrice*14, // Target 15% profit
+                        price: entryPrice*1.4, // Target 40% profit
                     }
                 );
             }
