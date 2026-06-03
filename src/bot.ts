@@ -708,14 +708,14 @@ export class TradingBot {
 
             else{
                 this.limitSellActive.add(asset_id);
-                console.log(`Executing LIMIT SELL trade for ${asset_id} at price ${entryPrice*1.466} and size ${this.BUY_SIZE-0.01}. Sell count: ${this.sellOrderCountPerToken.get(asset_id)}/${this.MAX_SELLS_PER_TOKEN}`);
+                console.log(`Executing LIMIT SELL trade for ${asset_id} at price ${entryPrice*1.47} and size ${this.BUY_SIZE-0.01}. Sell count: ${this.sellOrderCountPerToken.get(asset_id)}/${this.MAX_SELLS_PER_TOKEN}`);
                 this.clobClient.cancelAll();
                 response = await this.clobClient.createAndPostOrder(
                     {
                         tokenID: asset_id,
                         side: Side.SELL,
                         size: this.BUY_SIZE-0.01,
-                        price: entryPrice*1.466, // Target 40% profit
+                        price: entryPrice*1.47, // Target 40% profit
                     }
                 );
             }
